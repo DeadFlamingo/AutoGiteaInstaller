@@ -78,7 +78,7 @@ curl -fsSL https://raw.githubusercontent.com/DeadFlamingo/AutoGiteaInstaller/ref
 sudo apt update && sudo apt upgrade -y
 
 # Запустите установщик
-curl -fsSL https://raw.githubusercontent.com/ВАШЕ_ИМЯ/gitea-installer/main/gitea_installer_enhanced.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/DeadFlamingo/AutoGiteaInstaller/refs/heads/main/gitea-nginx-postgres-docker-ssl-installer.sh | sudo bash
 ```
 
 ### После установки
@@ -197,7 +197,7 @@ sudo systemctl status nginx
 Для полного удаления Gitea запустите скрипт и выберите пункт "Удалить Gitea":
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ВАШЕ_ИМЯ/gitea-installer/main/gitea_installer_enhanced.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/DeadFlamingo/AutoGiteaInstaller/refs/heads/main/gitea-nginx-postgres-docker-ssl-installer.sh | sudo bash
 ```
 
 Или вручную:
