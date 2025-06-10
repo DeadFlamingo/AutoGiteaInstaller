@@ -22,7 +22,7 @@
 **Запустите одной командой:**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ВАШЕ_ИМЯ/gitea-installer/main/gitea_installer_enhanced.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/DeadFlamingo/AutoGiteaInstaller/refs/heads/main/gitea-nginx-postgres-docker-ssl-installer.sh | sudo bash
 ```
 
 ## 📋 Требования
