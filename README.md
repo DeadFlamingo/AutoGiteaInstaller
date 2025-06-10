@@ -220,8 +220,8 @@ sudo certbot delete --cert-name ваш_домен.com
 ## 📞 Поддержка
 
 - 📖 [Официальная документация Gitea](https://docs.gitea.io/)
-- 🐛 [Сообщить о проблеме](https://github.com/ВАШЕ_ИМЯ/gitea-installer/issues)
-- 💡 [Предложить улучшение](https://github.com/ВАШЕ_ИМЯ/gitea-installer/discussions)
+- 🐛 [Сообщить о проблеме](https://github.com/DeadFlamingo/AutoGiteaInstaller/issues)
+- 💡 [Предложить улучшение](https://github.com/DeadFlamingo/AutoGiteaInstaller/discussions)
 
 ## 📄 Лицензия
 
