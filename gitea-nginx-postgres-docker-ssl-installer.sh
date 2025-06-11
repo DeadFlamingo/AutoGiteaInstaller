@@ -2,7 +2,7 @@
 
 #================================================================================#
 #            УСТАНОВЩИК GITEA С DOCKER, POSTGRES, NGINX И SSL                  #
-#                                                                              #
+#                       Совместимый с curl | bash                             #
 #================================================================================#
 
 # --- Цвета для вывода ---
@@ -17,9 +17,15 @@ warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
 success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
 error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
+# Проверяем, запущен ли скрипт через pipe
+IS_PIPED=false
+if [ ! -t 0 ]; then
+    IS_PIPED=true
+fi
+
 exec > >(tee -a /var/log/gitea-installer.log) 2>&1
 
-# Добавляем параметры командной строки
+# Параметры по умолчанию
 AUTO_INSTALL=false
 GITEA_DOMAIN=""
 LETSENCRYPT_EMAIL=""
@@ -45,27 +51,51 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         --help)
+            echo "Установщик Gitea"
             echo "Использование: $0 [--auto] [--domain DOMAIN] [--email EMAIL] [--admin-user USER]"
             echo ""
             echo "Опции:"
-            echo "  --auto           Автоматическая установка без интерактивного ввода"
+            echo "  --auto           Автоматическая установка"
             echo "  --domain         Доменное имя для Gitea"
             echo "  --email          Email для Let's Encrypt"
             echo "  --admin-user     Имя администратора Gitea"
             echo "  --help           Показать эту справку"
             echo ""
             echo "Примеры:"
-            echo "  $0                                    # Интерактивная установка"
-            echo "  $0 --auto --domain git.example.com --email admin@example.com --admin-user admin"
+            echo "  # Скачать и запустить интерактивно:"
+            echo "  curl -fsSL URL | sudo bash"
+            echo ""
+            echo "  # Автоматическая установка:"
+            echo "  curl -fsSL URL | sudo bash -s -- --auto --domain git.example.com --email admin@example.com --admin-user admin"
+            echo ""
+            echo "  # Или скачать локально:"
+            echo "  curl -fsSL URL -o gitea-installer.sh"
+            echo "  chmod +x gitea-installer.sh"
+            echo "  sudo ./gitea-installer.sh"
             exit 0
             ;;
         *)
             error "Неизвестный параметр: $1"
-            echo "Используйте --help для справки"
             exit 1
             ;;
     esac
 done
+
+# Если запущен через pipe без параметров, принудительно включаем автоматический режим
+if [ "$IS_PIPED" = true ] && [ "$AUTO_INSTALL" = false ]; then
+    echo
+    warning "Скрипт запущен через pipe без параметров автоматической установки."
+    echo "Для интерактивной установки скачайте скрипт локально:"
+    echo
+    echo "curl -fsSL https://raw.githubusercontent.com/DeadFlamingo/AutoGiteaInstaller/refs/heads/main/gitea-nginx-postgres-docker-ssl-installer.sh -o gitea-installer.sh"
+    echo "chmod +x gitea-installer.sh"
+    echo "sudo ./gitea-installer.sh"
+    echo
+    echo "Или используйте автоматический режим:"
+    echo "curl -fsSL URL | sudo bash -s -- --auto --domain git.example.com --email admin@example.com --admin-user admin"
+    echo
+    exit 1
+fi
 
 prepare_system() {
     info "Подготовка системы..."
@@ -159,7 +189,33 @@ validate_username() {
     return 0
 }
 
+safe_read() {
+    local prompt="$1"
+    local varname="$2"
+    local password="$3"
+    
+    if [ "$IS_PIPED" = true ]; then
+        error "Интерактивный ввод недоступен в режиме pipe"
+        exit 1
+    fi
+    
+    if [ "$password" = "true" ]; then
+        echo -n "$prompt"
+        read -s "$varname"
+        echo
+    else
+        echo -n "$prompt"
+        read "$varname"
+    fi
+}
+
 get_user_data_interactive() {
+    if [ "$IS_PIPED" = true ]; then
+        error "Интерактивный режим недоступен при запуске через pipe"
+        echo "Используйте параметры командной строки для автоматической установки"
+        exit 1
+    fi
+    
     echo
     echo "==============================================="
     echo "  НАСТРОЙКА GITEA - ВВОД ПАРАМЕТРОВ"
@@ -168,8 +224,7 @@ get_user_data_interactive() {
 
     # Ввод домена
     while true; do
-        echo -n "Введите доменное имя для Gitea (например: git.example.com): "
-        read GITEA_DOMAIN
+        safe_read "Введите доменное имя для Gitea (например: git.example.com): " GITEA_DOMAIN false
         if validate_domain "$GITEA_DOMAIN"; then
             break
         else
@@ -179,8 +234,7 @@ get_user_data_interactive() {
 
     # Ввод email
     while true; do
-        echo -n "Введите email для Let's Encrypt: "
-        read LETSENCRYPT_EMAIL
+        safe_read "Введите email для Let's Encrypt: " LETSENCRYPT_EMAIL false
         if validate_email "$LETSENCRYPT_EMAIL"; then
             break
         else
@@ -190,8 +244,7 @@ get_user_data_interactive() {
 
     # Ввод имени администратора
     while true; do
-        echo -n "Введите имя администратора Gitea (3-30 символов, начинается с буквы): "
-        read GITEA_ADMIN_USER
+        safe_read "Введите имя администратора Gitea (3-30 символов, начинается с буквы): " GITEA_ADMIN_USER false
         if validate_username "$GITEA_ADMIN_USER"; then
             break
         else
@@ -201,13 +254,9 @@ get_user_data_interactive() {
 
     # Ввод пароля для системного пользователя
     while true; do
-        echo -n "Введите пароль для системного пользователя gitea (минимум 8 символов): "
-        read -s GITEA_USER_PASSWORD
-        echo
+        safe_read "Введите пароль для системного пользователя gitea (минимум 8 символов): " GITEA_USER_PASSWORD true
         if [ ${#GITEA_USER_PASSWORD} -ge 8 ]; then
-            echo -n "Повторите пароль: "
-            read -s GITEA_USER_PASSWORD_CONFIRM
-            echo
+            safe_read "Повторите пароль: " GITEA_USER_PASSWORD_CONFIRM true
             if [ "$GITEA_USER_PASSWORD" = "$GITEA_USER_PASSWORD_CONFIRM" ]; then
                 break
             else
@@ -220,6 +269,7 @@ get_user_data_interactive() {
 }
 
 get_user_data_auto() {
+    info "Автоматический режим установки"
     # Автоматический режим - генерация случайного пароля
     GITEA_USER_PASSWORD=$(openssl rand -base64 16)
     info "Автоматически сгенерирован пароль для пользователя gitea"
@@ -230,7 +280,8 @@ get_user_data() {
         # Проверяем, что все необходимые параметры указаны
         if [ -z "$GITEA_DOMAIN" ] || [ -z "$LETSENCRYPT_EMAIL" ] || [ -z "$GITEA_ADMIN_USER" ]; then
             error "Для автоматической установки требуются параметры: --domain, --email, --admin-user"
-            echo "Пример: $0 --auto --domain git.example.com --email admin@example.com --admin-user admin"
+            echo "Пример:"
+            echo "curl -fsSL URL | sudo bash -s -- --auto --domain git.example.com --email admin@example.com --admin-user admin"
             exit 1
         fi
         
@@ -258,7 +309,7 @@ get_user_data() {
     # Проверка DNS
     if ! nslookup "$GITEA_DOMAIN" > /dev/null 2>&1; then
         warning "Домен $GITEA_DOMAIN не резолвится. Убедитесь, что DNS настроен правильно."
-        if [ "$AUTO_INSTALL" = false ]; then
+        if [ "$AUTO_INSTALL" = false ] && [ "$IS_PIPED" = false ]; then
             echo -n "Продолжить установку? (y/N): "
             read CONTINUE
             if [[ ! "$CONTINUE" =~ ^[Yy]$ ]]; then
@@ -553,6 +604,12 @@ final_instructions() {
 }
 
 show_menu() {
+    if [ "$IS_PIPED" = true ]; then
+        error "Интерактивное меню недоступно при запуске через pipe"
+        echo "Используйте параметры командной строки или скачайте скрипт локально"
+        exit 1
+    fi
+    
     echo
     echo "==============================================="
     echo "         УСТАНОВЩИК GITEA"
@@ -610,7 +667,7 @@ show_status() {
     fi
     
     echo
-    if [ "$AUTO_INSTALL" = false ]; then
+    if [ "$AUTO_INSTALL" = false ] && [ "$IS_PIPED" = false ]; then
         echo -n "Нажмите Enter для продолжения..."
         read
         show_menu
@@ -621,7 +678,7 @@ uninstall_gitea() {
     echo
     warning "Удаление Gitea и всех связанных данных..."
     
-    if [ "$AUTO_INSTALL" = false ]; then
+    if [ "$AUTO_INSTALL" = false ] && [ "$IS_PIPED" = false ]; then
         echo -n "Вы уверены, что хотите удалить Gitea и все его данные? (y/N): "
         read CONFIRM
         if [[ ! "$CONFIRM" =~ ^[Yy]$ ]]; then
@@ -658,7 +715,7 @@ uninstall_gitea() {
     
     success "Gitea полностью удалена."
     
-    if [ "$AUTO_INSTALL" = false ]; then
+    if [ "$AUTO_INSTALL" = false ] && [ "$IS_PIPED" = false ]; then
         echo -n "Нажмите Enter для продолжения..."
         read
         show_menu
@@ -684,5 +741,11 @@ if [ "$AUTO_INSTALL" = true ]; then
     info "Запуск автоматической установки..."
     main_install
 else
+    # Если запущен через pipe без --auto, показываем ошибку
+    if [ "$IS_PIPED" = true ]; then
+        error "Для использования через pipe требуется параметр --auto"
+        echo "Используйте: curl -fsSL URL | sudo bash -s -- --auto --domain DOMAIN --email EMAIL --admin-user USER"
+        exit 1
+    fi
     show_menu
 fi
