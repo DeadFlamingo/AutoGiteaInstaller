@@ -19,6 +19,54 @@ error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
 exec > >(tee -a /var/log/gitea-installer.log) 2>&1
 
+# Добавляем параметры командной строки
+AUTO_INSTALL=false
+GITEA_DOMAIN=""
+LETSENCRYPT_EMAIL=""
+GITEA_ADMIN_USER=""
+
+# Парсинг аргументов
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --auto)
+            AUTO_INSTALL=true
+            shift
+            ;;
+        --domain)
+            GITEA_DOMAIN="$2"
+            shift 2
+            ;;
+        --email)
+            LETSENCRYPT_EMAIL="$2"
+            shift 2
+            ;;
+        --admin-user)
+            GITEA_ADMIN_USER="$2"
+            shift 2
+            ;;
+        --help)
+            echo "Использование: $0 [--auto] [--domain DOMAIN] [--email EMAIL] [--admin-user USER]"
+            echo ""
+            echo "Опции:"
+            echo "  --auto           Автоматическая установка без интерактивного ввода"
+            echo "  --domain         Доменное имя для Gitea"
+            echo "  --email          Email для Let's Encrypt"
+            echo "  --admin-user     Имя администратора Gitea"
+            echo "  --help           Показать эту справку"
+            echo ""
+            echo "Примеры:"
+            echo "  $0                                    # Интерактивная установка"
+            echo "  $0 --auto --domain git.example.com --email admin@example.com --admin-user admin"
+            exit 0
+            ;;
+        *)
+            error "Неизвестный параметр: $1"
+            echo "Используйте --help для справки"
+            exit 1
+            ;;
+    esac
+done
+
 prepare_system() {
     info "Подготовка системы..."
     if [ "$EUID" -ne 0 ]; then
@@ -30,7 +78,7 @@ prepare_system() {
     apt-get update
     apt-get install -y \
         curl wget gnupg2 ca-certificates lsb-release apt-transport-https \
-        software-properties-common ufw sudo net-tools whiptail dnsutils
+        software-properties-common ufw sudo net-tools dnsutils
 
     if ! command -v docker &> /dev/null; then
         info "Установка Docker..."
@@ -87,84 +135,142 @@ EOF
     success "fail2ban настроен."
 }
 
-validate_input() {
-    # Проверка домена
-    if [[ ! "$GITEA_DOMAIN" =~ ^[a-zA-Z0-9][a-zA-Z0-9.-]{0,61}[a-zA-Z0-9]?\.[a-zA-Z]{2,}$ ]]; then
-        error "Некорректный формат домена"
-        exit 1
+validate_domain() {
+    local domain=$1
+    if [[ ! "$domain" =~ ^[a-zA-Z0-9][a-zA-Z0-9.-]{0,61}[a-zA-Z0-9]?\.[a-zA-Z]{2,}$ ]]; then
+        return 1
     fi
-    
-    # Проверка email
-    if [[ ! "$LETSENCRYPT_EMAIL" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$ ]]; then
-        error "Некорректный формат email"
-        exit 1
-    fi
-    
-    # Проверка имени пользователя
-    if [[ ! "$GITEA_ADMIN_USER" =~ ^[a-zA-Z][a-zA-Z0-9_-]{2,30}$ ]]; then
-        error "Имя пользователя должно начинаться с буквы и содержать 3-30 символов"
-        exit 1
-    fi
-    
-    # Проверка доступности домена (DNS)
-    if ! nslookup "$GITEA_DOMAIN" > /dev/null 2>&1; then
-        warning "Домен $GITEA_DOMAIN не резолвится. Убедитесь, что DNS настроен правильно."
-        if ! whiptail --yesno "Продолжить установку?" 10 60; then
-            exit 1
-        fi
-    fi
+    return 0
 }
 
-get_user_data() {
+validate_email() {
+    local email=$1
+    if [[ ! "$email" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$ ]]; then
+        return 1
+    fi
+    return 0
+}
+
+validate_username() {
+    local username=$1
+    if [[ ! "$username" =~ ^[a-zA-Z][a-zA-Z0-9_-]{2,30}$ ]]; then
+        return 1
+    fi
+    return 0
+}
+
+get_user_data_interactive() {
+    echo
+    echo "==============================================="
+    echo "  НАСТРОЙКА GITEA - ВВОД ПАРАМЕТРОВ"
+    echo "==============================================="
+    echo
+
+    # Ввод домена
     while true; do
-        GITEA_DOMAIN=$(whiptail --inputbox "Введите доменное имя для Gitea (например: git.example.com):" 10 60 --title "Домен" 3>&1 1>&2 2>&3)
-        if [[ "$GITEA_DOMAIN" =~ ^[a-zA-Z0-9][a-zA-Z0-9.-]{0,61}[a-zA-Z0-9]?\.[a-zA-Z]{2,}$ ]]; then
+        echo -n "Введите доменное имя для Gitea (например: git.example.com): "
+        read GITEA_DOMAIN
+        if validate_domain "$GITEA_DOMAIN"; then
             break
         else
-            whiptail --msgbox "Некорректный формат домена. Попробуйте снова." 8 45
+            error "Некорректный формат домена. Попробуйте снова."
         fi
     done
 
+    # Ввод email
     while true; do
-        LETSENCRYPT_EMAIL=$(whiptail --inputbox "Email для Let's Encrypt (обязательно):" 10 60 --title "Email" 3>&1 1>&2 2>&3)
-        if [[ "$LETSENCRYPT_EMAIL" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$ ]]; then
+        echo -n "Введите email для Let's Encrypt: "
+        read LETSENCRYPT_EMAIL
+        if validate_email "$LETSENCRYPT_EMAIL"; then
             break
         else
-            whiptail --msgbox "Некорректный формат email. Попробуйте снова." 8 45
+            error "Некорректный формат email. Попробуйте снова."
         fi
     done
 
+    # Ввод имени администратора
     while true; do
-        GITEA_ADMIN_USER=$(whiptail --inputbox "Имя администратора Gitea (3-30 символов, начинается с буквы):" 10 60 --title "Пользователь" 3>&1 1>&2 2>&3)
-        if [[ "$GITEA_ADMIN_USER" =~ ^[a-zA-Z][a-zA-Z0-9_-]{2,30}$ ]]; then
+        echo -n "Введите имя администратора Gitea (3-30 символов, начинается с буквы): "
+        read GITEA_ADMIN_USER
+        if validate_username "$GITEA_ADMIN_USER"; then
             break
         else
-            whiptail --msgbox "Некорректное имя пользователя. Должно начинаться с буквы и содержать 3-30 символов." 8 45
+            error "Некорректное имя пользователя. Должно начинаться с буквы и содержать 3-30 символов."
         fi
     done
 
+    # Ввод пароля для системного пользователя
     while true; do
-        GITEA_USER_PASSWORD=$(whiptail --passwordbox "Введите пароль для системного пользователя gitea (минимум 8 символов):" 10 60 --title "Пароль" 3>&1 1>&2 2>&3)
+        echo -n "Введите пароль для системного пользователя gitea (минимум 8 символов): "
+        read -s GITEA_USER_PASSWORD
+        echo
         if [ ${#GITEA_USER_PASSWORD} -ge 8 ]; then
-            GITEA_USER_PASSWORD_CONFIRM=$(whiptail --passwordbox "Повторите пароль:" 10 60 --title "Подтверждение" 3>&1 1>&2 2>&3)
+            echo -n "Повторите пароль: "
+            read -s GITEA_USER_PASSWORD_CONFIRM
+            echo
             if [ "$GITEA_USER_PASSWORD" = "$GITEA_USER_PASSWORD_CONFIRM" ]; then
                 break
             else
-                whiptail --msgbox "Пароли не совпадают. Попробуйте снова." 8 45
+                error "Пароли не совпадают. Попробуйте снова."
             fi
         else
-            whiptail --msgbox "Пароль должен содержать минимум 8 символов." 8 45
+            error "Пароль должен содержать минимум 8 символов."
         fi
     done
+}
+
+get_user_data_auto() {
+    # Автоматический режим - генерация случайного пароля
+    GITEA_USER_PASSWORD=$(openssl rand -base64 16)
+    info "Автоматически сгенерирован пароль для пользователя gitea"
+}
+
+get_user_data() {
+    if [ "$AUTO_INSTALL" = true ]; then
+        # Проверяем, что все необходимые параметры указаны
+        if [ -z "$GITEA_DOMAIN" ] || [ -z "$LETSENCRYPT_EMAIL" ] || [ -z "$GITEA_ADMIN_USER" ]; then
+            error "Для автоматической установки требуются параметры: --domain, --email, --admin-user"
+            echo "Пример: $0 --auto --domain git.example.com --email admin@example.com --admin-user admin"
+            exit 1
+        fi
+        
+        # Валидация параметров
+        if ! validate_domain "$GITEA_DOMAIN"; then
+            error "Некорректный формат домена: $GITEA_DOMAIN"
+            exit 1
+        fi
+        
+        if ! validate_email "$LETSENCRYPT_EMAIL"; then
+            error "Некорректный формат email: $LETSENCRYPT_EMAIL"
+            exit 1
+        fi
+        
+        if ! validate_username "$GITEA_ADMIN_USER"; then
+            error "Некорректное имя пользователя: $GITEA_ADMIN_USER"
+            exit 1
+        fi
+        
+        get_user_data_auto
+    else
+        get_user_data_interactive
+    fi
 
     # Проверка DNS
     if ! nslookup "$GITEA_DOMAIN" > /dev/null 2>&1; then
         warning "Домен $GITEA_DOMAIN не резолвится. Убедитесь, что DNS настроен правильно."
-        if ! whiptail --yesno "Продолжить установку?" 10 60; then
-            exit 1
+        if [ "$AUTO_INSTALL" = false ]; then
+            echo -n "Продолжить установку? (y/N): "
+            read CONTINUE
+            if [[ ! "$CONTINUE" =~ ^[Yy]$ ]]; then
+                info "Установка отменена пользователем."
+                exit 1
+            fi
+        else
+            warning "Продолжаем установку в автоматическом режиме..."
         fi
     fi
 
+    # Генерация паролей и ключей
     GITEA_ADMIN_PASSWORD=$(openssl rand -base64 12)
     DB_PASSWORD=$(openssl rand -base64 16)
     GITEA_SECRET_KEY=$(openssl rand -hex 32)
@@ -180,6 +286,8 @@ GITEA_INTERNAL_TOKEN=${GITEA_INTERNAL_TOKEN}
 GITEA_JWT_SECRET=${GITEA_JWT_SECRET}
 EOF
     chmod 600 /opt/gitea/.env
+    
+    success "Конфигурация сохранена в /opt/gitea/.env"
 }
 
 create_gitea_user() {
@@ -190,6 +298,9 @@ create_gitea_user() {
     
     # Безопасная установка пароля
     echo "gitea:${GITEA_USER_PASSWORD}" | chpasswd
+    
+    # Сохраняем пароль в файл для администратора
+    echo "SYSTEM_USER_PASSWORD=${GITEA_USER_PASSWORD}" >> /opt/gitea/.env
     unset GITEA_USER_PASSWORD GITEA_USER_PASSWORD_CONFIRM
     
     usermod -aG docker gitea
@@ -197,6 +308,7 @@ create_gitea_user() {
 }
 
 create_docker_compose() {
+    info "Создание конфигурации Docker Compose..."
     GITEA_UID=$(id -u gitea)
     GITEA_GID=$(id -g gitea)
     cat > /opt/gitea/docker-compose.yml <<EOF
@@ -297,6 +409,7 @@ EOF
     systemctl restart nginx
 
     # Получение SSL сертификата
+    info "Получение SSL сертификата для домена ${GITEA_DOMAIN}..."
     if ! certbot --nginx -d ${GITEA_DOMAIN} --non-interactive --agree-tos -m ${LETSENCRYPT_EMAIL}; then
         error "Не удалось получить сертификат SSL"
         exit 1
@@ -417,43 +530,55 @@ create_admin_user() {
 }
 
 final_instructions() {
-    echo -e "
-=================================================="
+    echo
+    echo "=================================================="
     success "Установка Gitea завершена!"
     echo "=================================================="
-    echo -e "
-🌐 Адрес: ${GREEN}https://${GITEA_DOMAIN}${NC}
-👤 Логин: ${YELLOW}${GITEA_ADMIN_USER}${NC}
-🔐 Пароль: ${YELLOW}${GITEA_ADMIN_PASSWORD}${NC}
-📧 Email: ${YELLOW}${LETSENCRYPT_EMAIL}${NC}
-🔌 SSH порт: ${YELLOW}2222${NC}
-"
-    echo -e "${YELLOW}ВАЖНО:${NC} Сохраните пароль администратора!"
-    echo -e "${YELLOW}ВАЖНО:${NC} Пароли сохранены в /opt/gitea/.env"
     echo
-    echo -e "Полезные команды:"
-    echo -e "• Просмотр логов: ${GREEN}docker logs gitea${NC}"
-    echo -e "• Перезапуск: ${GREEN}cd /opt/gitea && docker compose restart${NC}"
-    echo -e "• Обновление: ${GREEN}cd /opt/gitea && docker compose pull && docker compose up -d${NC}"
+    echo "🌐 Адрес: https://${GITEA_DOMAIN}"
+    echo "👤 Логин администратора: ${GITEA_ADMIN_USER}"
+    echo "🔐 Пароль администратора: ${GITEA_ADMIN_PASSWORD}"
+    echo "📧 Email: ${LETSENCRYPT_EMAIL}"
+    echo "🔌 SSH порт: 2222"
+    echo
+    echo "⚠️  ВАЖНО: Сохраните пароль администратора!"
+    echo "⚠️  ВАЖНО: Все пароли сохранены в /opt/gitea/.env"
+    echo
+    echo "Полезные команды:"
+    echo "• Просмотр логов: docker logs gitea"
+    echo "• Перезапуск: cd /opt/gitea && docker compose restart"
+    echo "• Обновление: cd /opt/gitea && docker compose pull && docker compose up -d"
+    echo "• Статус: docker ps | grep gitea"
     echo
 }
 
 show_menu() {
-    whiptail --title "Установщик Gitea" --menu "Выберите действие:" 20 60 10 \
-    "1" "Установить Gitea" \
-    "2" "Удалить Gitea" \
-    "3" "Показать статус" \
-    "4" "Выйти" 2>menu_choice
-
-    CHOICE=$(<menu_choice)
-    rm -f menu_choice
+    echo
+    echo "==============================================="
+    echo "         УСТАНОВЩИК GITEA"
+    echo "==============================================="
+    echo
+    echo "Выберите действие:"
+    echo "1) Установить Gitea"
+    echo "2) Удалить Gitea"
+    echo "3) Показать статус"
+    echo "4) Выйти"
+    echo
+    echo -n "Ваш выбор (1-4): "
+    read CHOICE
 
     case $CHOICE in
         1) main_install ;;
         2) uninstall_gitea ;;
         3) show_status ;;
-        4) clear; exit 0 ;;
-        *) error "Неверный выбор"; exit 1 ;;
+        4) 
+            echo "Выход..."
+            exit 0 
+            ;;
+        *) 
+            error "Неверный выбор. Попробуйте снова."
+            show_menu
+            ;;
     esac
 }
 
@@ -465,59 +590,84 @@ show_status() {
     if [ -d "/opt/gitea" ]; then
         cd /opt/gitea
         echo "Docker контейнеры:"
-        docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" | grep -E "(gitea|postgres)"
+        docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" | grep -E "(gitea|postgres)" || echo "Контейнеры не запущены"
         echo
         
         if [ -f ".env" ]; then
-            source .env
-            echo "Конфигурация найдена ✅"
+            echo "✅ Конфигурация найдена"
             if docker ps | grep -q "gitea.*Up"; then
-                echo "Gitea запущена ✅"
-                echo "URL: https://$(docker exec gitea env | grep GITEA__server__DOMAIN | cut -d= -f2)"
+                echo "✅ Gitea запущена"
+                DOMAIN=$(docker exec gitea env 2>/dev/null | grep GITEA__server__DOMAIN | cut -d= -f2 || echo "unknown")
+                echo "🌐 URL: https://${DOMAIN}"
             else
-                echo "Gitea не запущена ❌"
+                echo "❌ Gitea не запущена"
             fi
         else
-            echo "Конфигурация не найдена ❌"
+            echo "❌ Конфигурация не найдена"
         fi
     else
-        echo "Gitea не установлена ❌"
+        echo "❌ Gitea не установлена"
     fi
     
     echo
-    read -p "Нажмите Enter для продолжения..."
-    show_menu
+    if [ "$AUTO_INSTALL" = false ]; then
+        echo -n "Нажмите Enter для продолжения..."
+        read
+        show_menu
+    fi
 }
 
 uninstall_gitea() {
     echo
     warning "Удаление Gitea и всех связанных данных..."
-    if whiptail --yesno "Вы уверены, что хотите удалить Gitea и все его данные?" 10 60; then
-        # Остановка и удаление контейнеров
-        docker stop gitea gitea-db 2>/dev/null || true
-        docker rm gitea gitea-db 2>/dev/null || true
-        
-        # Удаление данных и конфигурации
-        rm -rf /opt/gitea
+    
+    if [ "$AUTO_INSTALL" = false ]; then
+        echo -n "Вы уверены, что хотите удалить Gitea и все его данные? (y/N): "
+        read CONFIRM
+        if [[ ! "$CONFIRM" =~ ^[Yy]$ ]]; then
+            info "Удаление отменено."
+            show_menu
+            return
+        fi
+    fi
+    
+    # Остановка и удаление контейнеров
+    info "Остановка контейнеров..."
+    docker stop gitea gitea-db 2>/dev/null || true
+    docker rm gitea gitea-db 2>/dev/null || true
+    
+    # Удаление данных и конфигурации
+    info "Удаление данных..."
+    rm -rf /opt/gitea
+    
+    # Получаем домен из конфигурации nginx
+    DOMAIN_CONF=$(ls /etc/nginx/sites-enabled/*.conf 2>/dev/null | head -1)
+    if [ -n "$DOMAIN_CONF" ]; then
+        DOMAIN=$(basename "$DOMAIN_CONF" .conf)
         
         # Удаление конфигурации Nginx
-        rm -f /etc/nginx/sites-enabled/${GITEA_DOMAIN}.* /etc/nginx/sites-available/${GITEA_DOMAIN}.*
+        rm -f /etc/nginx/sites-enabled/${DOMAIN}.conf /etc/nginx/sites-available/${DOMAIN}.conf
         systemctl reload nginx 2>/dev/null || true
         
-        # Удаление пользователя
-        userdel -r gitea 2>/dev/null || true
-        
-        # Удаление SSL ертификатов
-        certbot delete --cert-name ${GITEA_DOMAIN} 2>/dev/null || true
-        
-        success "Gitea полностью удалена."
-    else
-        info "Удаление отменено."
+        # Удаление SSL сертификатов
+        certbot delete --cert-name ${DOMAIN} --non-interactive 2>/dev/null || true
     fi
-    exit 0
+    
+    # Удаление пользователя
+    userdel -r gitea 2>/dev/null || true
+    
+    success "Gitea полностью удалена."
+    
+    if [ "$AUTO_INSTALL" = false ]; then
+        echo -n "Нажмите Enter для продолжения..."
+        read
+        show_menu
+    fi
 }
 
 main_install() {
+    echo
+    info "Начинаем установку Gitea..."
     prepare_system
     setup_firewall
     setup_fail2ban
@@ -529,4 +679,10 @@ main_install() {
     final_instructions
 }
 
-show_menu
+# Главная логика
+if [ "$AUTO_INSTALL" = true ]; then
+    info "Запуск автоматической установки..."
+    main_install
+else
+    show_menu
+fi
